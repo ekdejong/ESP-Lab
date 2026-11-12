@@ -5,6 +5,7 @@
   - [Overview](#overview)
   - [E3SM S2D Extensions](#e3sm-s2d-extensions)
   - [Analysis & Diagnostic Suite (`jupyter/`)](#analysis--diagnostic-suite-jupyter)
+  - [SamudrACE Monthly Data](#samudrace-monthly-data)
   - [Interactive Web Viewer](#interactive-web-viewer)
   - [Data Organization & Output Conventions](#data-organization--output-conventions)
     - [Diagnostic Data Layout (`S2D_DIAG_ROOT`)](#diagnostic-data-layout-s2d_diag_root)
@@ -81,6 +82,27 @@ recompute_skill = False    # force the notebook's own skill/comparison caches (n
 ```
 
 Caches are reused only when their stored provenance attributes match the current settings; otherwise they are rebuilt in place under the same fixed name.
+
+## SamudrACE Monthly Data
+
+`esp_lab.data_access_samudrace.get_monthly_data` lazily loads requested runs from a SamudrACE experiment directory. For example:
+
+```python
+from esp_lab import data_access_e3sm, data_access_samudrace
+
+init_tags = data_access_e3sm.build_init_tags(range(1980, 2012), 5)
+with data_access_samudrace.get_monthly_data(
+  data_dir="/path/to/runs",
+  case="C1A1-01mo-EN00",
+  init_tags=init_tags,
+  field="surface_precipitation_rate",
+  realm="atm",
+  chunks={"Y": 1},
+) as monthly:
+  print(monthly.sizes)
+```
+
+The result uses the `Y`, `L`, and `M` lead-time dimensions and retains `time`, `init_time`, and `counts` for coverage checks. It includes the potentially partial initial month and excludes the partial 25th entry. Process each initialization month separately when using seasonal helpers. With 24 months, the existing centered-season helper labels eight seasonal leads, but the last is missing because it requires the 25th month. SamudrACE `surface_precipitation_rate` is in mm/s; the loader leaves values unchanged. Notebook integration, unit conversion, and 5-degree regridding are not yet implemented for SamudrACE.
 
 ## Interactive Web Viewer
 ESP-Lab includes a responsive HTML web generator (`esp_lab.diagnostics.web`) that compiles all evaluation figures into a standalone, browsable diagnostics gallery.
