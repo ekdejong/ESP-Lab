@@ -71,6 +71,14 @@ def test_rmse_notebooks_delegate_metric_specific_logic():
         assert "rmse_compare_helper.direct_rmse_cache_path" in direct
         assert "valid_area_weighted_fraction" in direct
 
+def test_samudrace_rmse_notebooks_separate_outputs_from_cesm_inputs():
+    for path in NOTEBOOKS[:2]:
+        source = _source(path)
+        assert "env_paths.samudrace_diagnostic_root()" in source
+        assert "env_paths.samudrace_figure_root()" in source
+        assert "SMYLE_BENCHMARK_DIR = str(env_paths.cesm_smyle_benchmark_root())" in source
+        assert "SMYLE_BENCHMARK_DIR = str(CESM_SMYLE_OUTDIR)" not in source
+
 
 def test_normalized_rmse_uses_one_common_cohort_and_metric_definition():
     for normalized_path, _ in REALM_PAIRS:
@@ -139,6 +147,148 @@ def test_rmse_notebook_code_cells_compile():
             source = "".join(cell.get("source", []))
             transformed = shell.input_transformer_manager.transform_cell(source)
             compile(transformed, f"{path}:cell-{index}", "exec")
+
+
+def test_atmospheric_rmse_notebook_registers_samudrace(monkeypatch, tmp_path):
+    import os
+    from types import SimpleNamespace
+
+    import cftime
+    import numpy as np
+    import xarray as xr
+
+    from workflows.leadtime_skill import samudrace
+
+    source = next(
+        ''.join(cell['source'])
+        for cell in json.loads(NOTEBOOKS[0].read_text())['cells']
+        if cell['cell_type'] == 'code' and 'INCLUDE_SAMUDRACE = True' in ''.join(cell['source'])
+    )
+    calls = []
+
+    def prepare(**kwargs):
+        calls.append(kwargs)
+        month = kwargs['init_month']
+        anomaly = xr.DataArray(
+            np.ones((1, 7, 1, 1, 1)), dims=('Y', 'L', 'M', 'lat', 'lon'),
+            coords={'Y': [f'2000{month:02d}0100'], 'L': [3, 6, 9, 12, 15, 18, 21],
+                    'M': [0], 'lat': [0.0], 'lon': [0.0]},
+        )
+        time = xr.DataArray(
+            [[cftime.DatetimeNoLeap(2000, month, 15)] * 7], dims=('Y', 'L'),
+            coords={'Y': anomaly.Y, 'L': anomaly.L},
+        )
+        return xr.Dataset({'anomaly': anomaly, 'climatology': anomaly.isel(Y=0, M=0), 'time': time}), f'identity-{month}'
+
+    monkeypatch.setattr(samudrace, 'prepare_atmospheric_anomaly', prepare)
+    monkeypatch.setenv('ESP_LAB_SAMUDRACE_ROOT', str(tmp_path / 'archive'))
+    ns = {
+        'os': os, 'field': 'PRECT', 'init_months': [5, 11],
+        'INIT_YEARS_BY_MONTH': {5: [2000], 11: [2000]},
+        'climy0': 2000, 'climy1': 2000, 'S2D_DIAG_ROOT': tmp_path,
+        'destgrid': xr.Dataset(), 'target_grid_identity': 'grid',
+        'regrid_method': 'conservative', 'regrid_periodic': True, 'mchunk': {},
+        'source_identity_mode': 'inventory', 'prepared_mode': 'auto',
+        'prepared_force_recompute': False, 'case_nens': 1,
+        'workflow_resources': SimpleNamespace(track=lambda obj: obj),
+        'E3SM_CASES': {}, 'anom_by_case_month': {}, 'clim_by_case_month': {},
+        'time_by_case_month': {}, 'e3sm_source_identity_by_case_month': {},
+        'WORKFLOW_SETTINGS': {'skill': {'lead_end': 8}},
+    }
+    exec(compile(source, '<samudrace-rmse-cell>', 'exec'), ns)
+    case = 'SamudrACE-C1A1-01mo-EN00'
+    assert case in ns['E3SM_CASES']
+    assert set(ns['anom_by_case_month'][case]) == {5, 11}
+    assert ns['e3sm_source_identity_by_case_month'][case][11] == 'identity-11'
+    assert ns['WORKFLOW_SETTINGS']['skill']['lead_end'] == 7
+    assert [call['init_month'] for call in calls] == [5, 11]
+    assert all(call['data_dir'] == str(tmp_path / 'archive') for call in calls)
+
+
+def test_ocean_rmse_notebook_intersects_samudrace_mask(monkeypatch, tmp_path):
+    import os
+    from types import SimpleNamespace
+
+    import cftime
+    import numpy as np
+    import xarray as xr
+
+    from esp_lab import leadtime_realm_skill
+    from esp_lab.leadtime_workflow import ocean_mask_identity
+    from workflows.leadtime_skill import samudrace
+
+    source = next(
+        ''.join(cell['source'])
+        for cell in json.loads(NOTEBOOKS[1].read_text())['cells']
+        if cell['cell_type'] == 'code' and 'INCLUDE_SAMUDRACE = True' in ''.join(cell['source'])
+    )
+    coords = {'Y': ['2000110100'], 'L': [3, 6, 9, 12, 15, 18, 21],
+              'M': [0], 'lat': [0.0], 'lon': [0.0, 5.0]}
+    existing = xr.DataArray(np.ones((1, 7, 1, 1, 2)), dims=('Y', 'L', 'M', 'lat', 'lon'), coords=coords)
+    sam_values = existing.copy()
+    sam_values.loc[{'lon': 5.0}] = np.nan
+    valid_time = xr.DataArray(
+        [[cftime.DatetimeNoLeap(2000, 11, 15)] * 7], dims=('Y', 'L'),
+        coords={'Y': existing.Y, 'L': existing.L},
+    )
+
+    def prepare(**kwargs):
+        assert kwargs['realm'] == 'ocn'
+        return xr.Dataset({'anomaly': sam_values, 'climatology': sam_values.isel(Y=0, M=0),
+                           'time': valid_time}), 'ocean-source'
+
+    monkeypatch.setattr(samudrace, 'prepare_seasonal_anomaly', prepare)
+    mask = xr.DataArray([[True, True]], dims=('lat', 'lon'), coords={'lat': [0.0], 'lon': [0.0, 5.0]})
+    ns = {
+        'os': os, 'field': 'SST', 'init_months': [11], 'INIT_YEARS_BY_MONTH': {11: [2000]},
+        'climy0': 2000, 'climy1': 2000, 'S2D_DIAG_ROOT': tmp_path,
+        'destgrid': xr.Dataset(), 'target_grid_identity': 'grid',
+        'regrid_method': 'conservative', 'regrid_periodic': True, 'mchunk': {},
+        'source_identity_mode': 'inventory', 'prepared_mode': 'auto',
+        'prepared_force_recompute': False, 'case_nens': 1,
+        'workflow_resources': SimpleNamespace(track=lambda obj: obj),
+        'E3SM_CASES': {'E3SM': {}}, 'anom_by_case_month': {'E3SM': {11: existing}},
+        'clim_by_case_month': {}, 'time_by_case_month': {},
+        'e3sm_source_identity_by_case_month': {}, 'WORKFLOW_SETTINGS': {'skill': {'lead_end': 8}},
+        'ocean_mask': mask, 'obs_seas_rg': mask.astype(float),
+        'smyle_anom_by_month': {11: existing}, 'leadtime_realm_skill': leadtime_realm_skill,
+        'ocean_mask_identity': ocean_mask_identity,
+    }
+    exec(compile(source, '<samudrace-ocean-rmse-cell>', 'exec'), ns)
+    assert ns['ocean_mask'].values.tolist() == [[True, False]]
+    assert ns['WORKFLOW_SETTINGS']['skill']['lead_end'] == 7
+    assert ns['anom_by_case_month']['E3SM'][11].isel(lon=1).isnull().all().item()
+    assert ns['smyle_anom_by_month'][11].isel(lon=1).isnull().all().item()
+    assert np.isnan(ns['obs_seas_rg'].isel(lon=1).item())
+    assert ns['analysis_domain_identity'] == ocean_mask_identity(ns['ocean_mask'])
+
+
+def test_samudrace_comparisons_use_seven_leads_and_ocean_domain_cache(tmp_path):
+    for path in NOTEBOOKS[:2]:
+        source = next(
+            ''.join(cell['source'])
+            for cell in json.loads(path.read_text())['cells']
+            if cell['cell_type'] == 'code'
+            and 'Include SamudrACE in the matched-ensemble CESM comparison' in ''.join(cell['source'])
+        )
+        case = 'SamudrACE-example'
+        ns = {
+            'Path': Path, 'samudrace_key': case, 'E3SM_CASES': {case: {}},
+            'E3SM_COMPARE_CASES': ['E3SM'], 'compare_lead_end': 8,
+            'analysis_domain_identity': 'sha256:example',
+            '_compare_dir_e3sm': lambda key, category: tmp_path / key / category,
+            '_compare_dir_smyle': lambda category: tmp_path / 'smyle' / category,
+            '_compare_resampling_cache_dir_smyle': lambda category: tmp_path / 'resampling' / category,
+        }
+        exec(compile(source, '<samudrace-comparison-cell>', 'exec'), ns)
+        assert ns['E3SM_COMPARE_CASES'] == ['E3SM', case]
+        assert ns['compare_lead_end'] == 7
+        if path == NOTEBOOKS[1]:
+            assert ns['_compare_dir_e3sm'](case, 'skill').endswith('/domain_example')
+            assert ns['_compare_dir_smyle']('skill').endswith('/domain_example')
+            assert ns['_compare_resampling_cache_dir_smyle']('skill').endswith('/domain_example')
+            exec(compile(source, '<samudrace-comparison-cell>', 'exec'), ns)
+            assert ns['_compare_dir_smyle']('skill').endswith('/skill/domain_example')
 
 
 def test_land_direct_rmse_scores_raw_values_and_skips_anomaly_reference(tmp_path, capsys):

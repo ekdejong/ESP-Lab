@@ -57,6 +57,40 @@ def preprocess_monthly(ds: xr.Dataset, field: str, nlead: int = 24) -> xr.Datase
     return result.transpose("Y", "L", "M", ...)
 
 
+def monthly_prediction_paths(
+    data_dir: str | Path,
+    case: str,
+    init_tags,
+    realm: str = "atm",
+) -> list[Path]:
+    """Resolve one prediction file per requested initialization, in order."""
+    realms = {"atm": "atmosphere", "ocn": "ocean", "atmosphere": "atmosphere", "ocean": "ocean"}
+    if realm not in realms:
+        raise ValueError(f"Unsupported SamudrACE realm: {realm!r}")
+    if not isinstance(case, str) or not case or Path(case).name != case or case in {".", ".."}:
+        raise ValueError("case must be a single experiment directory name")
+    if isinstance(init_tags, (str, bytes)):
+        raise ValueError("init_tags must be a sequence of initialization tags")
+    tags = list(init_tags)
+    if not tags or len(set(tags)) != len(tags):
+        raise ValueError("init_tags must be nonempty and contain no duplicates")
+    month_names = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+    paths = []
+    for tag in tags:
+        if not isinstance(tag, str) or len(tag) != 10 or not tag.isascii() or not tag.isdigit() or tag[6:] != "0100":
+            raise ValueError(f"Invalid initialization tag: {tag!r}")
+        try:
+            start = datetime.strptime(tag, "%Y%m%d%H")
+        except ValueError as exc:
+            raise ValueError(f"Invalid initialization tag: {tag!r}") from exc
+        run = f"{case}-{start.year:04d}-{month_names[start.month - 1]}"
+        path = Path(data_dir) / case / run / realms[realm] / "monthly_mean_predictions.nc"
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing SamudrACE monthly predictions for {tag}: {path}")
+        paths.append(path)
+    return paths
+
+
 def get_monthly_data(
     data_dir: str | Path,
     case: str,
@@ -80,33 +114,12 @@ def get_monthly_data(
     partial initialization month; sample counts are returned for auditing.
     Process each initialization month separately when using seasonal helpers.
     """
-    realms = {"atm": "atmosphere", "ocn": "ocean", "atmosphere": "atmosphere", "ocean": "ocean"}
-    if realm not in realms:
-        raise ValueError(f"Unsupported SamudrACE realm: {realm!r}")
-    if not isinstance(case, str) or not case or Path(case).name != case or case in {".", ".."}:
-        raise ValueError("case must be a single experiment directory name")
     if isinstance(init_tags, (str, bytes)):
         raise ValueError("init_tags must be a sequence of initialization tags")
     tags = list(init_tags)
-    if not tags or len(set(tags)) != len(tags):
-        raise ValueError("init_tags must be nonempty and contain no duplicates")
     if not isinstance(nlead, int) or isinstance(nlead, bool) or not 1 <= nlead <= 24:
         raise ValueError("nlead must be between 1 and 24")
-
-    month_names = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
-    paths = []
-    for tag in tags:
-        if not isinstance(tag, str) or len(tag) != 10 or not tag.isascii() or not tag.isdigit() or tag[6:] != "0100":
-            raise ValueError(f"Invalid initialization tag: {tag!r}")
-        try:
-            start = datetime.strptime(tag, "%Y%m%d%H")
-        except ValueError as exc:
-            raise ValueError(f"Invalid initialization tag: {tag!r}") from exc
-        run = f"{case}-{start.year:04d}-{month_names[start.month - 1]}"
-        path = Path(data_dir) / case / run / realms[realm] / "monthly_mean_predictions.nc"
-        if not path.is_file():
-            raise FileNotFoundError(f"Missing SamudrACE monthly predictions for {tag}: {path}")
-        paths.append(path)
+    paths = monthly_prediction_paths(data_dir, case, tags, realm)
 
     opened = xr.open_mfdataset(
         paths,

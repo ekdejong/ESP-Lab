@@ -57,8 +57,8 @@ def test_monthly_adapter_rejects_bad_coverage_and_time_alignment():
         preprocess_monthly(data, "Tat2m")
 
 
-def write_run(root, case, year, data=None):
-    path = root / case / f"{case}-{year}-nov" / "atmosphere" / "monthly_mean_predictions.nc"
+def write_run(root, case, year, data=None, realm="atmosphere"):
+    path = root / case / f"{case}-{year}-nov" / realm / "monthly_mean_predictions.nc"
     path.parent.mkdir(parents=True)
     (monthly_dataset(year) if data is None else data).set_coords(
         ["init_time", "counts", "valid_time"]
@@ -142,3 +142,164 @@ def test_load_closes_source_datasets(tmp_path, monkeypatch, chunks):
     with get_monthly_data(tmp_path, case, ["2000110100"], "Tat2m", chunks=chunks):
         assert not closed
     assert closed == [True]
+
+
+def test_prepare_atmospheric_anomaly_converts_and_restarts_from_cache(tmp_path, monkeypatch):
+    from workflows.leadtime_skill import samudrace
+
+    case = "C1A1-01mo-EN00"
+    source_paths = []
+    for year in (2000, 2001):
+        data = monthly_dataset(year)
+        data["surface_precipitation_rate"] = data.Tat2m * (year - 1999) * 0.001
+        source_paths.append(write_run(tmp_path, case, year, data))
+    calls = []
+
+    def identity_regridder(source, target, **kwargs):
+        calls.append(kwargs)
+        return lambda data: data
+
+    monkeypatch.setattr(samudrace.regrid_utils, "make_regridder", identity_regridder)
+    args = dict(
+        data_dir=tmp_path, case=case, field="PRECT", init_month=11,
+        years=[2000, 2001], climatology_years=(2000, 2003),
+        diagnostic_root=tmp_path / "diagnostics", target_grid=xr.Dataset(),
+        target_grid_identity="test-grid", regridding_method="conservative",
+        periodic=True, chunks={"Y": 1, "L": 7, "M": 1, "lat": 1, "lon": 1},
+        ensemble_member_count=2,
+    )
+    prepared, identity = samudrace.prepare_atmospheric_anomaly(**args)
+    try:
+        assert prepared.L.values.tolist() == [3, 6, 9, 12, 15, 18, 21]
+        np.testing.assert_allclose(
+            prepared.anomaly.isel(L=0, M=0, lat=0, lon=0).values, [-43.2, 43.2]
+        )
+        assert prepared.anomaly.attrs["units"] == "mm/day"
+        assert prepared.attrs["source_data_identity"] == identity
+    finally:
+        prepared.close()
+    assert len(calls) == 1
+
+    for path in source_paths:
+        path.unlink()
+    cached, cached_identity = samudrace.prepare_atmospheric_anomaly(
+        **args, source_identity_mode="snapshot", prepared_mode="require"
+    )
+    try:
+        assert cached_identity == identity
+        np.testing.assert_allclose(
+            cached.anomaly.isel(L=0, M=0, lat=0, lon=0).values, [-43.2, 43.2]
+        )
+    finally:
+        cached.close()
+    assert len(calls) == 1
+
+
+def test_prepare_atmospheric_anomaly_rejects_unsupported_field(tmp_path):
+    from workflows.leadtime_skill.samudrace import prepare_atmospheric_anomaly
+
+    with pytest.raises(ValueError, match="Unsupported SamudrACE atm field"):
+        prepare_atmospheric_anomaly(
+            data_dir=tmp_path, case="case", field="PSL", init_month=11,
+            years=[2000], climatology_years=(2000, 2001), diagnostic_root=tmp_path,
+            target_grid=xr.Dataset(), target_grid_identity="test-grid",
+            regridding_method="conservative", periodic=True, chunks={},
+        )
+
+
+def test_prepare_ocean_sst_uses_kelvin_surface_field_and_retains_mask(tmp_path, monkeypatch):
+    from workflows.leadtime_skill import samudrace
+
+    case = "C1A1-01mo-EN00"
+    for year in (2000, 2001):
+        data = monthly_dataset(year).reindex(lon=[0.5, 1.5])
+        data["sst"] = 273.15 + data.Tat2m * (year - 1999)
+        write_run(tmp_path, case, year, data, realm="ocean")
+    monkeypatch.setattr(
+        samudrace.regrid_utils, "make_regridder", lambda *args, **kwargs: lambda data: data
+    )
+    prepared, _ = samudrace.prepare_seasonal_anomaly(
+        data_dir=tmp_path, case=case, field="SST", realm="ocn", init_month=11,
+        years=[2000, 2001], climatology_years=(2000, 2003),
+        diagnostic_root=tmp_path / "diagnostics", target_grid=xr.Dataset(),
+        target_grid_identity="test-grid", regridding_method="conservative",
+        periodic=True, chunks={"Y": 1, "L": 7, "M": 1, "lat": 1, "lon": 2},
+        ensemble_member_count=2,
+    )
+    try:
+        np.testing.assert_allclose(
+            prepared.anomaly.isel(L=0, M=0, lat=0, lon=0).values, [-0.5, 0.5]
+        )
+        assert prepared.anomaly.isel(lon=1).isnull().all().compute().item()
+        assert prepared.anomaly.attrs["units"] == r"$^\circ$C"
+    finally:
+        prepared.close()
+
+
+@pytest.mark.parametrize("field,native_field", [("TREFHT", "Tat2m"), ("TS", "TS")])
+def test_prepare_atmospheric_temperature_converts_kelvin(tmp_path, monkeypatch, field, native_field):
+    from workflows.leadtime_skill import samudrace
+
+    case = "C1A1-01mo-EN00"
+    for year in (2000, 2001):
+        data = monthly_dataset(year)
+        data[native_field] = 273.15 + data.Tat2m * (year - 1999)
+        write_run(tmp_path, case, year, data)
+    monkeypatch.setattr(
+        samudrace.regrid_utils, "make_regridder", lambda *args, **kwargs: lambda data: data
+    )
+    prepared, _ = samudrace.prepare_atmospheric_anomaly(
+        data_dir=tmp_path, case=case, field=field, init_month=11,
+        years=[2000, 2001], climatology_years=(2000, 2003),
+        diagnostic_root=tmp_path / "diagnostics", target_grid=xr.Dataset(),
+        target_grid_identity="test-grid", regridding_method="conservative",
+        periodic=True, chunks={"Y": 2, "L": 7, "M": 2, "lat": 1, "lon": 1},
+        ensemble_member_count=2,
+    )
+    try:
+        np.testing.assert_allclose(
+            prepared.climatology.isel(L=0, lat=0, lon=0).values, 1.5
+        )
+        assert prepared.anomaly.attrs["units"] == r"$^\circ$C"
+    finally:
+        prepared.close()
+
+
+def test_prepared_precipitation_runs_seven_lead_rmse_skill(tmp_path, monkeypatch):
+    from esp_lab.leadtime_realm_skill import compute_and_cache_rmse_skill
+    from workflows.leadtime_skill import samudrace
+
+    case = "C1A1-01mo-EN00"
+    years = [2000, 2001, 2002, 2003]
+    for year in years:
+        data = monthly_dataset(year)
+        data["surface_precipitation_rate"] = data.Tat2m * (year - 1999) * 0.001
+        write_run(tmp_path, case, year, data)
+    monkeypatch.setattr(
+        samudrace.regrid_utils, "make_regridder", lambda *args, **kwargs: lambda data: data
+    )
+    prepared, _ = samudrace.prepare_seasonal_anomaly(
+        data_dir=tmp_path, case=case, field="PRECT", realm="atm", init_month=11,
+        years=years, climatology_years=(2000, 2005),
+        diagnostic_root=tmp_path / "diagnostics", target_grid=xr.Dataset(),
+        target_grid_identity="test-grid", regridding_method="conservative",
+        periodic=True, chunks={"Y": 4, "L": 7, "M": 2, "lat": 1, "lon": 1},
+        ensemble_member_count=2,
+    )
+    obs_times = sorted(set(prepared.time.values.ravel()))
+    obs_values = [(date.year - 1999) ** 2 + date.month / 12 for date in obs_times]
+    obs = xr.DataArray(
+        np.array(obs_values).reshape(-1, 1, 1), dims=("time", "lat", "lon"),
+        coords={"time": obs_times, "lat": [0.0], "lon": [0.5]},
+    )
+    try:
+        skill = compute_and_cache_rmse_skill(
+            prepared.anomaly, prepared.time.load(), obs,
+            cftime.DatetimeNoLeap(2000, 1, 1), cftime.DatetimeNoLeap(2005, 12, 31),
+            1, 7, outfile=tmp_path / "skill.nc", expected_attrs={},
+            netcdf_write_options={}, detrend=False,
+        )
+        assert skill.L.values.tolist() == [3, 6, 9, 12, 15, 18, 21]
+        assert np.isfinite(skill.rmse.values).all()
+    finally:
+        prepared.close()

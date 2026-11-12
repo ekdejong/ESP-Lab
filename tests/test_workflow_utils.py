@@ -1,5 +1,6 @@
 import os
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -7,6 +8,7 @@ import xarray as xr
 import cftime
 
 from esp_lab.leadtime_validation import check_remove_drift_sample
+from esp_lab import env_paths
 from esp_lab.utils.netcdf_utils import (
     atomic_to_netcdf,
     cleanup_netcdf_temp_files,
@@ -16,6 +18,7 @@ from esp_lab.utils.resource_utils import ResourceTracker
 from esp_lab.utils.unit_conversion import (
     convert_kelvin_to_celsius,
     convert_pa_to_hpa,
+    convert_precip_mmps_to_mmday,
     convert_precip_mps_to_mmday,
     no_unit_conversion,
 )
@@ -46,6 +49,22 @@ def test_resource_tracker_closes_unique_resources_in_reverse_order():
         tracker.track(_Resource("late", closed))
 
 
+def test_samudrace_output_roots_are_private_and_benchmark_is_separate(monkeypatch, tmp_path):
+    monkeypatch.setenv("PSCRATCH", str(tmp_path / "scratch"))
+    monkeypatch.delenv("ESP_LAB_S2D_DIAG_ROOT", raising=False)
+    monkeypatch.delenv("ESP_LAB_FIGURE_ROOT", raising=False)
+    monkeypatch.delenv("ESP_LAB_CESM_SMYLE_BENCHMARK_ROOT", raising=False)
+    assert env_paths.samudrace_diagnostic_root() == tmp_path / "scratch/esp-lab-output/diagnostics"
+    assert env_paths.samudrace_figure_root() == tmp_path / "scratch/esp-lab-output/figures"
+    assert env_paths.cesm_smyle_benchmark_root() == Path("/global/cfs/cdirs/e3sm/S2S2D/s2d_diag/CESM-SMYLE")
+    monkeypatch.setenv("ESP_LAB_S2D_DIAG_ROOT", str(tmp_path / "custom-cache"))
+    monkeypatch.setenv("ESP_LAB_FIGURE_ROOT", str(tmp_path / "custom-figures"))
+    monkeypatch.setenv("ESP_LAB_CESM_SMYLE_BENCHMARK_ROOT", str(tmp_path / "benchmark"))
+    assert env_paths.samudrace_diagnostic_root() == tmp_path / "custom-cache"
+    assert env_paths.samudrace_figure_root() == tmp_path / "custom-figures"
+    assert env_paths.cesm_smyle_benchmark_root() == tmp_path / "benchmark"
+
+
 def test_atomic_netcdf_round_trip_and_temp_cleanup(tmp_path):
     destination = tmp_path / "cache.nc"
     stale = tmp_path / ".cache.nc.tmp.stale"
@@ -69,9 +88,11 @@ def test_unit_conversions_preserve_lazy_xarray_behavior():
 
     np.testing.assert_allclose(convert_kelvin_to_celsius(kelvin), [0.0, 1.0])
     np.testing.assert_allclose(convert_precip_mps_to_mmday(precip), [86400.0])
+    np.testing.assert_allclose(convert_precip_mmps_to_mmday(precip), [86.4])
     np.testing.assert_allclose(convert_pa_to_hpa(pressure), [1000.0])
     assert convert_kelvin_to_celsius(kelvin).attrs["units"] == r"$^\circ$C"
     assert convert_precip_mps_to_mmday(precip).attrs["units"] == "mm/day"
+    assert convert_precip_mmps_to_mmday(precip).attrs["units"] == "mm/day"
     assert convert_pa_to_hpa(pressure).attrs["units"] == "hPa"
     assert no_unit_conversion(kelvin, units="standardized").attrs["units"] == "standardized"
 

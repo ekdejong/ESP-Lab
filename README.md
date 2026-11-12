@@ -102,7 +102,11 @@ with data_access_samudrace.get_monthly_data(
   print(monthly.sizes)
 ```
 
-The result uses the `Y`, `L`, and `M` lead-time dimensions and retains `time`, `init_time`, and `counts` for coverage checks. It includes the potentially partial initial month and excludes the partial 25th entry. Process each initialization month separately when using seasonal helpers. With 24 months, the existing centered-season helper labels eight seasonal leads, but the last is missing because it requires the 25th month. SamudrACE `surface_precipitation_rate` is in mm/s; the loader leaves values unchanged. Notebook integration, unit conversion, and 5-degree regridding are not yet implemented for SamudrACE.
+The result uses the `Y`, `L`, and `M` lead-time dimensions and retains `time`, `init_time`, and `counts` for coverage checks. It includes the potentially partial initial month and excludes the partial 25th entry. Process each initialization month separately when using seasonal helpers. With 24 months, the existing centered-season helper labels eight seasonal leads, but the last is missing because it requires the 25th month. SamudrACE `surface_precipitation_rate` is in mm/s; the loader leaves values unchanged.
+
+The atmosphere and ocean `1b` RMSE notebooks can include `C1A1-01mo-EN00` alongside E3SM and CESM-SMYLE. They support SamudrACE `TREFHT`, `TS`, `PRECT`, and `SST`, regrid each model to the configured 5-degree grid, and compare the seven complete seasons. Set `ESP_LAB_SAMUDRACE_ROOT` to override the default archive root, or set `INCLUDE_SAMUDRACE = False` in the SamudrACE cell to omit it. SamudrACE precipitation is converted from mm/s to mm/day and temperatures from K to degrees C; the ocean notebook applies a common ocean mask. Other notebook families are not yet integrated with SamudrACE.
+
+These two notebooks write diagnostics to `$PSCRATCH/esp-lab-output/diagnostics` and figures to `$PSCRATCH/esp-lab-output/figures` by default, falling back to `$HOME/esp-lab-output` if `PSCRATCH` is unset. `ESP_LAB_S2D_DIAG_ROOT` and `ESP_LAB_FIGURE_ROOT` override these output paths. CESM-SMYLE benchmark inputs remain separate, defaulting to `/global/cfs/cdirs/e3sm/S2S2D/s2d_diag/CESM-SMYLE`; set `ESP_LAB_CESM_SMYLE_BENCHMARK_ROOT` to read benchmarks elsewhere. The notebooks do not write benchmark inputs to that shared source.
 
 ## Interactive Web Viewer
 ESP-Lab includes a responsive HTML web generator (`esp_lab.diagnostics.web`) that compiles all evaluation figures into a standalone, browsable diagnostics gallery.

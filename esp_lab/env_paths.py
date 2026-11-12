@@ -6,7 +6,9 @@ which meant no other user or account could run them without manual
 find-replace. These helpers keep the same defaults for the existing
 workflow but let any of them be overridden with an ``ESP_LAB_*``
 environment variable, so notebooks stay runnable out of the box while
-remaining portable.
+remaining portable. The SamudrACE RMSE notebooks use separate private output
+defaults and read CESM-SMYLE benchmark inputs from an independently configured
+location.
 """
 
 from __future__ import annotations
@@ -42,6 +44,27 @@ def figure_root() -> Path:
     return _resolve("FIGURE_ROOT")
 
 
+def _private_output_root() -> Path:
+    scratch = os.environ.get("PSCRATCH")
+    return (Path(scratch) if scratch else Path.home()) / "esp-lab-output"
+
+
+def samudrace_diagnostic_root() -> Path:
+    """Private SamudrACE diagnostics root, unless explicitly overridden."""
+    return Path(os.environ.get("ESP_LAB_S2D_DIAG_ROOT", _private_output_root() / "diagnostics"))
+
+
+def samudrace_figure_root() -> Path:
+    """Private SamudrACE figure root, unless explicitly overridden."""
+    return Path(os.environ.get("ESP_LAB_FIGURE_ROOT", _private_output_root() / "figures"))
+
+
+def cesm_smyle_benchmark_root() -> Path:
+    """Read-only CESM-SMYLE benchmark root, separate from output caches."""
+    default = Path(_DEFAULTS["S2D_DIAG_ROOT"]) / "CESM-SMYLE"
+    return Path(os.environ.get("ESP_LAB_CESM_SMYLE_BENCHMARK_ROOT", default))
+
+
 def obs_root() -> Path:
     """Root for e3sm_diags observational time-series inputs."""
     return _resolve("OBS_ROOT")
@@ -56,6 +79,9 @@ __all__ = [
     "s2d_diag_root",
     "raw_model_root",
     "figure_root",
+    "samudrace_diagnostic_root",
+    "samudrace_figure_root",
+    "cesm_smyle_benchmark_root",
     "obs_root",
     "data_root",
 ]

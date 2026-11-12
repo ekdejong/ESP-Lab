@@ -27,6 +27,13 @@ def convert_precip_mps_to_mmday(data):
     return converted
 
 
+def convert_precip_mmps_to_mmday(data):
+    """Convert precipitation from millimetres per second to millimetres per day."""
+    converted = data * 86400.0
+    converted.attrs["units"] = "mm/day"
+    return converted
+
+
 def convert_pa_to_hpa(data):
     """Convert pressure from pascals to hectopascals."""
     converted = data * 1.0e-2
@@ -122,6 +129,7 @@ __all__ = [
     "convert_kelvin_to_celsius",
     "convert_mpas_ohc_to_jm2",
     "convert_pa_to_hpa",
+    "convert_precip_mmps_to_mmday",
     "convert_precip_mps_to_mmday",
     "no_unit_conversion",
 ]
